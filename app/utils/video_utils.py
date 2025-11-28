@@ -6,7 +6,7 @@ import json
 from config import OPENAI_API_KEY
 import requests
 import os
-
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +31,8 @@ def download_file(url: str, output_dir: str = "./downloads") -> str:
 
         # Extract the file name from the URL
         file_name = os.path.basename(url)
+        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+        file_name = f"{timestamp}_{file_name}"
         output_path = os.path.join(output_dir, file_name)
 
         # Download the file
@@ -74,7 +76,7 @@ async def transcribe_audio(audio_file):
         )
     )
 
-    print(transcript.text)
+    logger.info(f"Transcription result: {transcript.text}")
 
     transcript_json = json.loads(transcript.text)
 
@@ -122,5 +124,5 @@ async def convert_video_to_audio(input_file: str) -> str:
         output_file
     ], check=True)
 
-    print("Created WAV:", output_file)
+    logging.info(f"Created WAV: {output_file}")
     return output_file

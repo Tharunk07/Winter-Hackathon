@@ -4,6 +4,7 @@ from app.database import (
             MONGO_DB_PDF_COLLECTION,
             MONGO_DB_COLLECTION_LIST,
             MONGO_DB_VIDEO_COLLECTION,
+            MONGO_DB_IMAGE_COLLECTION,
             insert_one_data)
 from app.milvus import create_milvus_collection, insert_data_to_collection
 from typing import List
@@ -11,7 +12,11 @@ from app.utils import (chunking_for_pdf,
                        convert_video_to_audio,
                        transcribe_audio,
                        process_and_store_transcript,
-                       download_file
+                       download_file,
+                       caption_image,
+                       extract_text_from_images,
+                       process_and_store_content,
+                       download_image_from_s3
                        )
 from motor.motor_asyncio import AsyncIOMotorClient
 from app.database.mongo_client import set_db
@@ -54,37 +59,6 @@ async def list_collections():
     except Exception as e:
         logging.error(f"Error listing collections: {e}", exc_info=True)
         return {"status": "error", "message": str(e)}
-
-@app.get(f"{API_PREFIX}/list-collection-content", tags=["Milvus Collection Info"])
-async def list_collection_content(collection_name: str, limit: int = 100, offset: int = 0):
-    try:
-        # Load the collection first
-        milvus_client.load_collection(collection_name)
-        
-        # Query without filter expression (use empty string or None)
-        results = milvus_client.query(
-            collection_name=collection_name,
-            filter="id >= 0",  # Simple filter that matches all records
-            limit=limit,
-            offset=offset,
-            output_fields=["id", "text", "keyword_text", "sourceURL", "embedding"]  # Exclude sparse for readability
-        )
-
-        return {
-            "status": "success",
-            "collection_name": collection_name,
-            "count_returned": len(results),
-            "data": results
-        }
-
-    except Exception as e:
-        logging.error(
-            f"Error retrieving collection content for '{collection_name}': {e}",
-            exc_info=True
-        )
-        return {"status": "error", "message": str(e)}
-
-
 
 @app.post(f"{API_PREFIX}/create-collection", tags = ["Milvus Collection"])
 async def create_collection(collection_name: str):
@@ -148,6 +122,7 @@ async def pdf_insert_data(knowledge_base_id: str, pdf_links: List[str]):
                     "updated_at": datetime.now(UTC)
                 }
             )
+            return {"status": "success", "collection_name": knowledge_base_id}
         else:
             logging.error(f"Failed to insert data into collection '{knowledge_base_id}' from PDF links.")
 
@@ -183,59 +158,53 @@ async def pdf_insert_data(knowledge_base_id: str, pdf_links: List[str]):
         return {"status": "error", "message": str(e)}
 
 
-
-
-@app.post(f"{API_PREFIX}/web-insert-data", tags = ["Milvus Collection"])
-async def web_insert_data(collection_name: str, web_links: List[str]):
-    pass
-
-
-
 @app.post(f"{API_PREFIX}/video-insert-data", tags=["Milvus Collection"])
-async def video_insert_data(collection_name: str, video_url: str):
+async def video_insert_data(collection_name: str, video_urls: List[str]):
     try:
-        video_path = download_file(video_url)
 
-        audio_path = await convert_video_to_audio(video_path)
+        for video_url in video_urls:
+            video_path = download_file(video_url)
 
-        transcript_text = await transcribe_audio(audio_path)
+            audio_path = await convert_video_to_audio(video_path)
 
-        chunked_data = await process_and_store_transcript(transcript_text, video_url)
+            transcript_text = await transcribe_audio(audio_path)
 
-        print("Chunked Data:", chunked_data)  
+            chunked_data = await process_and_store_transcript(transcript_text, video_url)
 
-        result = await insert_data_to_collection(
-            collection_name=collection_name,
-            chunked_data=chunked_data
-        )
+            logging.info(f"Processed transcript into {len(chunked_data)} chunks.")
 
-        if result:
-            logging.info(f"Inserted {len(chunked_data)} chunks into collection '{collection_name}' from video URL.")
-            await insert_one_data(
-                MONGO_DB_VIDEO_COLLECTION,
-                {
-                    "knowledge_base_id": collection_name,
-                    "video_links": video_url,
-                    "status": "success",
-                    "length": len(chunked_data),
-                    "created_at": datetime.now(UTC),
-                    "updated_at": datetime.now(UTC)
-                }
+            result = await insert_data_to_collection(
+                collection_name=collection_name,
+                chunked_data=chunked_data
             )
-            return {"status": "success", "collection_name": collection_name}
-        else:
-            logging.error(f"Failed to insert data into collection '{collection_name}' from video URL.")
-            await insert_one_data(
-                MONGO_DB_VIDEO_COLLECTION,
-                {
-                    "knowledge_base_id": collection_name,
-                    "video_links": video_url,
-                    "status": "failed",
-                    "created_at": datetime.now(UTC),
-                    "updated_at": datetime.now(UTC)
-                }
-            )
-            return {"status": "error", "message": "Failed to insert data into Milvus collection."}
+
+            if result:
+                logging.info(f"Inserted {len(chunked_data)} chunks into collection '{collection_name}' from video URL.")
+                await insert_one_data(
+                    MONGO_DB_VIDEO_COLLECTION,
+                    {
+                        "knowledge_base_id": collection_name,
+                        "video_links": video_url,
+                        "status": "success",
+                        "length": len(chunked_data),
+                        "created_at": datetime.now(UTC),
+                        "updated_at": datetime.now(UTC)
+                    }
+                )
+                return {"status": "success", "collection_name": collection_name}
+            else:
+                logging.error(f"Failed to insert data into collection '{collection_name}' from video URL.")
+                await insert_one_data(
+                    MONGO_DB_VIDEO_COLLECTION,
+                    {
+                        "knowledge_base_id": collection_name,
+                        "video_links": video_url,
+                        "status": "failed",
+                        "created_at": datetime.now(UTC),
+                        "updated_at": datetime.now(UTC)
+                    }
+                )
+                return {"status": "error", "message": "Failed to insert data into Milvus collection."}
 
     except Exception as e:
         logging.error(f"Error inserting video data: {e}", exc_info=True)
@@ -243,11 +212,59 @@ async def video_insert_data(collection_name: str, video_url: str):
 
 
 @app.post(f"{API_PREFIX}/image-insert-data", tags = ["Milvus Collection"])
-async def text_insert_data(collection_name: str, texts: List[str]):
+async def image_insert_data(collection_name: str, image_paths: List[str]):
     try:
-        pass
+        for image_path in image_paths:
+
+            image = download_image_from_s3(image_path)
+
+            caption = await caption_image(image)
+            logging.info(f"Generated caption: {caption}")
+
+            extracted_text = await extract_text_from_images(image)
+            logging.info(f"Extracted text: {extracted_text}")
+
+            chunked_data = process_and_store_content(caption, extracted_text, image_path)
+
+            logging.info(f"Chunked data: {chunked_data}")
+
+            result = await insert_data_to_collection(
+                collection_name=collection_name,
+                chunked_data=chunked_data
+            )
+
+
+            if result:
+                logging.info(f"Inserted {len(chunked_data)} chunks into collection '{collection_name}' from image.")
+
+                await insert_one_data(
+                    MONGO_DB_IMAGE_COLLECTION,
+                    {
+                        "knowledge_base_id": collection_name,
+                        "image_links": image_path,
+                        "status": "success",
+                        "length": len(chunked_data),
+                        "created_at": datetime.now(UTC),
+                        "updated_at": datetime.now(UTC)
+                    }
+                )
+                return {"status": "success", "collection_name": collection_name}
+            else:
+                logging.error(f"Failed to insert data into collection '{collection_name}' from image.")
+                await insert_one_data(
+                    MONGO_DB_IMAGE_COLLECTION,
+                    {
+                        "knowledge_base_id": collection_name,
+                        "image_links": image_path,
+                        "status": "failed",
+                        "created_at": datetime.now(UTC),
+                        "updated_at": datetime.now(UTC)
+                    }
+                )
+                return {"status": "error", "message": "Failed to insert data into Milvus collection."}
+
     except Exception as e:
-        logging.error(f"Error inserting text data: {e}", exc_info=True)
+        logging.error(f"Error inserting image data: {e}", exc_info=True)
         return {"status": "error", "message": str(e)}
 
 
