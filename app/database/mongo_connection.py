@@ -8,6 +8,7 @@ MONGO_DB_PDF_COLLECTION = "Multimodel_pdf_collection"
 MONGO_DB_COLLECTION_LIST = "Multimodel_collection_list"
 MONGO_DB_VIDEO_COLLECTION = "Multimodel_video_collection"
 MONGO_DB_IMAGE_COLLECTION = "Multimodel_image_collection"
+MONGO_DB_EXCEL_COLLECTION = "Multimodel_excel_collection"
 def get_collection(collection_name):
 
     return get_db()[collection_name]

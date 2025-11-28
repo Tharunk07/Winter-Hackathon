@@ -1,10 +1,12 @@
 from app import app
+from app.utils.graph_db import clear_database, create_constraints, download_excel, infer_schema, ingest_categorical_entities, ingest_primary_entities, ingest_relationships, normalize_dataframe
 from config import API_PREFIX, MONGO_DB_URI, MONGO_DB, milvus_client, MILVUS_URI, MILVUS_TOKEN
 from app.database import (
             MONGO_DB_PDF_COLLECTION,
             MONGO_DB_COLLECTION_LIST,
             MONGO_DB_VIDEO_COLLECTION,
             MONGO_DB_IMAGE_COLLECTION,
+            MONGO_DB_EXCEL_COLLECTION,
             insert_one_data)
 from app.milvus import create_milvus_collection, insert_data_to_collection
 from typing import List
@@ -21,9 +23,11 @@ from app.utils import (chunking_for_pdf,
 from motor.motor_asyncio import AsyncIOMotorClient
 from app.database.mongo_client import set_db
 import logging
-from datetime import datetime, UTC
-from app.utils import generate_safe_collection_name, vector_search
+from datetime import datetime, UTC, time
+from app.utils import generate_safe_collection_name, vector_search, keyword_search_milvus, hybrid_retrieve,answer_question
 from pymilvus import Collection , connections
+from typing import Dict, Any
+from fastapi import APIRouter,HTTPException, Response
 
 _client = AsyncIOMotorClient(MONGO_DB_URI)
 _db = _client[MONGO_DB]
@@ -268,6 +272,80 @@ async def image_insert_data(collection_name: str, image_paths: List[str]):
         return {"status": "error", "message": str(e)}
 
 
+@app.post(f"{API_PREFIX}/image-insert-data", tags = ["NEO4J Collection"])
+async def image_insert_data(collection_name: str, image_paths: List[str]):
+    try:
+       pass
+
+    except Exception as e:
+        logging.error(f"Error inserting image data: {e}", exc_info=True)
+        return {"status": "error", "message": str(e)}
+
+
+
+
+
+@app.post(f"{API_PREFIX}/graph-rag", tags = ["Neo4j Graph RAG"])
+async def flow_build_graph_rag(excel_url: str) -> Dict[str, Any]:
+    """
+    UNIVERSAL GRAPH RAG BUILD FLOW
+    Works with ANY tabular dataset
+    """
+
+    
+    try:
+        # 1. Download
+        df = await download_excel(excel_url)
+        
+        # 2. Normalize
+        df = await normalize_dataframe(df)
+        
+        # 3. Clear existing graph
+        await clear_database()
+        
+        # 4. Infer schema
+        schema = await infer_schema(df)
+        
+        # 5. Create constraints
+        await create_constraints(schema)
+        
+        # 6. Ingest primary entities
+        await ingest_primary_entities(df, schema)
+        
+        # 7. Ingest categorical entities
+        await ingest_categorical_entities(df, schema)
+        
+        # 8. Create relationships
+        await ingest_relationships(df, schema)
+        
+        await insert_one_data(
+                    MONGO_DB_EXCEL_COLLECTION,
+                    {
+                        "excel_url": excel_url,
+                        "status": "success",
+                        "created_at": datetime.now(UTC),
+                        "updated_at": datetime.now(UTC)
+                    })
+        return {
+            "status": "success",
+            "rows": len(df),
+            "schema": schema
+        }
+        
+    except Exception as e:
+        await insert_one_data(
+                    MONGO_DB_EXCEL_COLLECTION,
+                    {
+                        "excel_url": excel_url,
+                        "status": "failed",
+                        "created_at": datetime.now(UTC),
+                        "updated_at": datetime.now(UTC)
+                    }
+        )
+        return {"status": "error", "error": str(e)}
+    
+
+
 
 #Search API
 @app.post(f"{API_PREFIX}/vector-search", tags = ["Milvus Collection Retrieval"])
@@ -287,3 +365,60 @@ async def retrieve_data(collection_name, query):
         logging.error(f"Error retrieving data: {e}", exc_info=True)
 
         return {"status": "failed", "message": str(e)}
+    
+
+@app.post(f"{API_PREFIX}/keyword_search", summary="To retrive the documents from given collection via keyword search",
+             description="It retrive most relavent docs")
+async def keyword_retrival(collection_name, query):
+    try:
+        # collection_name = f"{payload.coll}_{payload.version}" if payload.version is not None else payload.coll
+        # if not milvus_client.has_collection(collection_name):
+        #     raise HTTPException(
+        #         status_code=404,
+        #         detail=f"Knowledge base version not found: '{collection_name}'"
+        #     )
+        
+        kw = await keyword_search_milvus(collection=collection_name, query=query)
+
+        return {"status_code": 200, "retrievedData": kw}
+    except Exception as e:
+        
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post(f"{API_PREFIX}/hybrid_search",summary="To retrive the documents from given collection via keyword + vector search",
+             description="It retrive most relavent docs")
+async def hybrid_retrival(collection_name,query)-> Dict:
+    try:
+        # collection_name = f"{payload.coll}_{payload.version}" if payload.version is not None else payload.coll
+        # if not milvus_client.has_collection(collection_name):
+        #     raise HTTPException(
+        #         status_code=404,
+        #         detail=f"Knowledge base version not found: '{collection_name}'"
+        #     )
+
+        final_texts,sources = await hybrid_retrieve(collection_name,query)
+
+        
+        return {"status_code":200,"response":final_texts,"sources":sources}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post(f"{API_PREFIX}/graph_search",summary="To retrive the answer from Neo4j graph DB via LLM question answering",
+             description="It retrive most relavent docs")
+async def hybrid_retrieval(query)-> Dict:
+    try:
+        # collection_name = f"{payload.coll}_{payload.version}" if payload.version is not None else payload.coll
+        # if not milvus_client.has_collection(collection_name):
+        #     raise HTTPException(
+        #         status_code=404,
+        #         detail=f"Knowledge base version not found: '{collection_name}'"
+        #     )
+
+        output = await answer_question(query)
+
+
+        return {"status_code":200,"response":output.get("answer",""),"sources":output.get("results","")}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    
