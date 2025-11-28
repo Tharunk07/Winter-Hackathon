@@ -64,10 +64,6 @@ async def download_extract_text_from_pdf(links: List[str]) -> List[Dict[str, str
     extracted = []
 
     for url in links:
-        if not url.lower().endswith(".pdf"):
-            logger.warning(f"Skipping non-PDF link: {url}")
-            continue
-
         try:
             resp = requests.get(url, headers=headers, timeout=(10, 60))
             resp.raise_for_status()
