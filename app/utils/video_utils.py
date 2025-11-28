@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 client = OpenAI(api_key=OPENAI_API_KEY)
 
 
+from urllib.parse import urlparse, parse_qs
 
 def download_file(url: str, output_dir: str = "./downloads") -> str:
     """
@@ -26,13 +27,16 @@ def download_file(url: str, output_dir: str = "./downloads") -> str:
         str: The path to the downloaded file.
     """
     try:
-        # Ensure the output directory exists
         os.makedirs(output_dir, exist_ok=True)
 
-        # Extract the file name from the URL
-        file_name = os.path.basename(url)
+        parsed_url = urlparse(url)
+        file_name = os.path.basename(parsed_url.path)
+        if not file_name: 
+            file_name = "downloaded_file"
+
         timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
         file_name = f"{timestamp}_{file_name}"
+
         output_path = os.path.join(output_dir, file_name)
 
         # Download the file
